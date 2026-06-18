@@ -100,17 +100,33 @@ def fetch_grades(config: Config, headless: bool = True, timeout_ms: int = 45000)
             page = browser.new_context().new_page()
             page.set_default_timeout(timeout_ms)
 
-            # 1) Giris
+            # 1) Giris (CAS login formu)
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            page.wait_for_selector("#username")
             page.fill("#username", config.firat_username)
             page.fill("#password", config.firat_password)
-            page.click("button[type=submit], input[type=submit]")
+            # Formu dogrudan submit et (Enter, login formunu tetikler; belirsiz buton secimi yerine)
+            page.press("#password", "Enter")
+            try:
+                page.wait_for_url(lambda u: "obs.firat.edu.tr/oibs/std/index.aspx" in u)
+            except Exception:
+                pass  # asagida net tani veriyoruz
             page.wait_for_load_state("networkidle")
 
             if "index.aspx" not in page.url:
+                # Tani: CAS hata mesaji var mi yoksa baska sayfa mi
+                detail = ""
+                try:
+                    err = page.query_selector(".errors, .alert-danger, #status, #msg")
+                    if err:
+                        detail = _clean(err.inner_text())[:200]
+                    if not detail:
+                        detail = _clean(page.inner_text("body"))[:200]
+                except Exception:
+                    pass
                 raise ScrapeError(
                     f"Giris sonrasi beklenen sayfaya ulasilamadi (URL: {page.url}). "
-                    f"Kullanici adi/parola hatali olabilir."
+                    f"Sayfa ozeti: {detail!r}"
                 )
 
             # 2) "Not Listesi" menu ogesinin hedef URL'ini bul

@@ -23,11 +23,7 @@ def _format_change(change: state.Change) -> str:
     notlar = html.escape(g.sinav_notlari or "-")
     durum = html.escape(g.durum or "-")
     baslik = "🆕 Yeni ders/not" if change.is_new else "📢 Not güncellendi"
-    satir = f"<b>{baslik}</b>\n📚 {ders}\n📝 {notlar}"
-    if not change.is_new and change.old_value:
-        satir += f"\n<i>(önceki: {html.escape(change.old_value)})</i>"
-    satir += f"\nDurum: {durum}"
-    return satir
+    return f"<b>{baslik}</b>\n📚 {ders}\n📝 {notlar}\nDurum: {durum}"
 
 
 def _format_baseline(grades: list[Grade]) -> str:

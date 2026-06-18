@@ -1,0 +1,54 @@
+name: Not Kontrol
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # her 15 dakikada bir (GitHub yuk durumuna gore birkac dk gecikebilir)
+  workflow_dispatch: {}       # elle tetikleme
+
+# state.json'i commit edebilmek icin yazma izni
+permissions:
+  contents: write
+
+# Ayni anda birden fazla kosuyu engelle
+concurrency:
+  group: not-kontrol
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Bagimliliklari kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Notlari kontrol et
+        env:
+          FIRAT_USERNAME: ${{ secrets.FIRAT_USERNAME }}
+          FIRAT_PASSWORD: ${{ secrets.FIRAT_PASSWORD }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python check.py
+
+      - name: Durumu kaydet (state.json)
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: not durumu guncellendi [skip ci]"
+            git push
+          else
+            echo "Degisiklik yok, commit edilmedi."
+          fi

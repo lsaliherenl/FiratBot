@@ -12,6 +12,7 @@ Akis:
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import asdict, dataclass
 
 from bs4 import BeautifulSoup
@@ -92,74 +93,100 @@ def _find_grades_frame(page) -> Frame | None:
     return None
 
 
-def fetch_grades(config: Config, headless: bool = True, timeout_ms: int = 45000) -> list[Grade]:
-    """OBS'ye girip not listesini ceker ve Grade listesi dondurur."""
+class _RetryableLogin(RuntimeError):
+    """Giris/oturum handoff gecici olarak basarisiz; yeniden denenebilir."""
+
+
+def _login_and_open_grades(page, config: Config, timeout_ms: int) -> list[Grade]:
+    """Tek deneme: giris yap, not sayfasini ac, parse et."""
+    # 1) Giris (CAS login formu)
+    page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    page.wait_for_selector("#username")
+    page.fill("#username", config.firat_username)
+    page.fill("#password", config.firat_password)
+    # Formu dogrudan submit et (Enter, login formunu tetikler; belirsiz buton secimi yerine)
+    page.press("#password", "Enter")
+    try:
+        page.wait_for_url(lambda u: "obs.firat.edu.tr/oibs/std/index.aspx" in u)
+    except Exception:
+        pass  # asagida net tani veriyoruz
+    page.wait_for_load_state("networkidle")
+
+    if "index.aspx" not in page.url:
+        detail = ""
+        try:
+            err = page.query_selector(".errors, .alert-danger, #status, #msg")
+            if err:
+                detail = _clean(err.inner_text())[:200]
+            if not detail:
+                detail = _clean(page.inner_text("body"))[:200]
+        except Exception:
+            pass
+        # CAS kimlik dogrulama (yanlis parola) kalici hatadir; tekrar denenmez.
+        if "jasig.firat.edu.tr" in page.url and ("yanlis" in detail.lower() or "yanlış" in detail.lower()):
+            raise ScrapeError(f"Kullanici adi/parola hatali: {detail!r}")
+        # caserror/redirect/404 gibi oturum handoff hatalari genelde gecici -> retry
+        raise _RetryableLogin(f"URL: {page.url}; Sayfa ozeti: {detail!r}")
+
+    # 2) "Not Listesi" menu ogesinin hedef URL'ini bul
+    onclick = page.evaluate(
+        """() => {
+            let r = null;
+            document.querySelectorAll('[onclick]').forEach(e => {
+                if ((e.innerText || '').trim() === 'Not Listesi') r = e.getAttribute('onclick');
+            });
+            return r;
+        }"""
+    )
+    if not onclick:
+        raise ScrapeError("'Not Listesi' menu ogesi bulunamadi.")
+    match = re.search(r"menu_close\(this,'([^']+)'\)", onclick)
+    if not match:
+        raise ScrapeError("'Not Listesi' baglantisi cozumlenemedi.")
+    target_url = match.group(1)
+
+    # 3) Sayfayi icerik frame'ine yukle (top-level goto session'i bozuyor)
+    page.evaluate("(u) => myOnFrameClick(u)", target_url)
+
+    # 4) Not frame'i yuklenene kadar bekle ve HTML'i al
+    page.wait_for_function(
+        """(hint) => Array.from(document.querySelectorAll('iframe, frame'))
+            .some(f => (f.contentWindow && f.contentWindow.location.href || '').includes(hint))""",
+        arg=GRADES_FRAME_HINT,
+    )
+    frame = _find_grades_frame(page)
+    if frame is None:
+        raise ScrapeError("Not listesi frame'i yuklenemedi.")
+    frame.wait_for_selector(f"#{GRADES_TABLE_ID}", timeout=timeout_ms)
+    return _parse_grades(frame.content())
+
+
+def fetch_grades(
+    config: Config, headless: bool = True, timeout_ms: int = 45000, attempts: int = 3
+) -> list[Grade]:
+    """OBS'ye girip not listesini ceker ve Grade listesi dondurur.
+
+    OBS'nin CAS->ASP.NET oturum handoff'u zaman zaman gecici sunucu hatasi
+    (caserror.aspx) verebildigi icin her deneme yeni bir tarayici context'iyle
+    birkac kez tekrarlanir.
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
         try:
-            page = browser.new_context().new_page()
-            page.set_default_timeout(timeout_ms)
-
-            # 1) Giris (CAS login formu)
-            page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            page.wait_for_selector("#username")
-            page.fill("#username", config.firat_username)
-            page.fill("#password", config.firat_password)
-            # Formu dogrudan submit et (Enter, login formunu tetikler; belirsiz buton secimi yerine)
-            page.press("#password", "Enter")
-            try:
-                page.wait_for_url(lambda u: "obs.firat.edu.tr/oibs/std/index.aspx" in u)
-            except Exception:
-                pass  # asagida net tani veriyoruz
-            page.wait_for_load_state("networkidle")
-
-            if "index.aspx" not in page.url:
-                # Tani: CAS hata mesaji var mi yoksa baska sayfa mi
-                detail = ""
+            last_error: Exception | None = None
+            for attempt in range(1, attempts + 1):
+                context = browser.new_context()
+                page = context.new_page()
+                page.set_default_timeout(timeout_ms)
                 try:
-                    err = page.query_selector(".errors, .alert-danger, #status, #msg")
-                    if err:
-                        detail = _clean(err.inner_text())[:200]
-                    if not detail:
-                        detail = _clean(page.inner_text("body"))[:200]
-                except Exception:
-                    pass
-                raise ScrapeError(
-                    f"Giris sonrasi beklenen sayfaya ulasilamadi (URL: {page.url}). "
-                    f"Sayfa ozeti: {detail!r}"
-                )
-
-            # 2) "Not Listesi" menu ogesinin hedef URL'ini bul
-            onclick = page.evaluate(
-                """() => {
-                    let r = null;
-                    document.querySelectorAll('[onclick]').forEach(e => {
-                        if ((e.innerText || '').trim() === 'Not Listesi') r = e.getAttribute('onclick');
-                    });
-                    return r;
-                }"""
-            )
-            if not onclick:
-                raise ScrapeError("'Not Listesi' menu ogesi bulunamadi.")
-            match = re.search(r"menu_close\(this,'([^']+)'\)", onclick)
-            if not match:
-                raise ScrapeError("'Not Listesi' baglantisi cozumlenemedi.")
-            target_url = match.group(1)
-
-            # 3) Sayfayi icerik frame'ine yukle (top-level goto session'i bozuyor)
-            page.evaluate("(u) => myOnFrameClick(u)", target_url)
-
-            # 4) Not frame'i yuklenene kadar bekle ve HTML'i al
-            page.wait_for_function(
-                """(hint) => Array.from(document.querySelectorAll('iframe, frame'))
-                    .some(f => (f.contentWindow && f.contentWindow.location.href || '').includes(hint))""",
-                arg=GRADES_FRAME_HINT,
-            )
-            frame = _find_grades_frame(page)
-            if frame is None:
-                raise ScrapeError("Not listesi frame'i yuklenemedi.")
-            frame.wait_for_selector(f"#{GRADES_TABLE_ID}", timeout=timeout_ms)
-            html = frame.content()
-            return _parse_grades(html)
+                    return _login_and_open_grades(page, config, timeout_ms)
+                except _RetryableLogin as exc:
+                    last_error = exc
+                    print(f"  [deneme {attempt}/{attempts}] gecici giris hatasi: {exc}")
+                finally:
+                    context.close()
+                if attempt < attempts:
+                    time.sleep(5 * attempt)
+            raise ScrapeError(f"Giris {attempts} denemede basarisiz. Son hata: {last_error}")
         finally:
             browser.close()

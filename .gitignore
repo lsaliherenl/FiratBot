@@ -11,3 +11,10 @@ venv/
 *.html
 debug_*.txt
 dumps/
+
+# Calisma loglari
+run.log
+loop.log
+
+# Yerel calisma durumu (sadece hash; her kontrolde degisir)
+state.json

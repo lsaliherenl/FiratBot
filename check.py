@@ -29,7 +29,7 @@ def _format_change(change: state.Change) -> str:
 def _format_baseline(grades: list[Grade]) -> str:
     lines = ["🤖 <b>FiratBot başladı!</b>", f"{len(grades)} ders takibe alındı. Yeni not girilince haber vereceğim.\n"]
     for g in grades:
-        lines.append(f"• {html.escape(g.ders_kodu)}: {html.escape(g.sinav_notlari or '-')}")
+        lines.append(f"• <b>{html.escape(g.ders_adi)}</b>: {html.escape(g.sinav_notlari or '-')}")
     return "\n".join(lines)
 
 

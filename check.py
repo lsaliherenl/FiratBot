@@ -1,14 +1,15 @@
-"""FiratBot ana akis: giris -> notlari cek -> degisiklikleri bul -> Telegram'a bildir -> state guncelle.
+"""FiratBot tek kontrol: giris -> notlari cek -> degisiklik -> bildir -> state guncelle.
 
-Tek seferlik calisir ve cikar. Zamanlamayi GitHub Actions (cron) yapar.
+Tek seferlik calisir ve cikar. Surekli calismayi runner.py saglar.
 
 Kullanim:
-    python check.py            # normal calistirma
-    python check.py --no-notify  # bildirim gondermeden (yerel test)
+    python check.py
+    python check.py --no-notify   # bildirim gondermeden (yerel test)
 """
 from __future__ import annotations
 
 import html
+import re
 import sys
 
 from firatbot import state
@@ -16,18 +17,46 @@ from firatbot.config import Config, ConfigError
 from firatbot.notifier import send
 from firatbot.obs import Grade, fetch_grades
 
+_EXAM_RE = re.compile(r"([A-Za-zÇĞİÖŞÜçğıöşü.]+)\s*:\s*(\S+)")
+
+
+def _parse_exams(sinav_notlari: str) -> dict[str, str]:
+    """'Vize : 65 Final : 70' -> {'Vize':'65','Final':'70'}."""
+    return {m.group(1): m.group(2) for m in _EXAM_RE.finditer(sinav_notlari or "")}
+
+
+def _final_changed(old_notlari: str, new_notlari: str) -> bool:
+    """Final notu gercek bir sayiya donmus/degismis mi?"""
+    new_final = _parse_exams(new_notlari).get("Final")
+    old_final = _parse_exams(old_notlari).get("Final")
+    return new_final is not None and new_final not in ("--", "") and new_final != old_final
+
+
+def _apply_filter(changes: list[state.Change], notify_filter: str) -> list[state.Change]:
+    if notify_filter == "final_only":
+        return [c for c in changes if _final_changed(c.old_sinav_notlari, c.grade.sinav_notlari)]
+    return changes
+
 
 def _format_change(change: state.Change) -> str:
     g = change.grade
-    ders = html.escape(f"{g.ders_kodu} — {g.ders_adi}")
-    notlar = html.escape(g.sinav_notlari or "-")
+    ders = html.escape(g.ders_adi)
+    yeni = html.escape(g.sinav_notlari or "-")
     durum = html.escape(g.durum or "-")
     baslik = "🆕 Yeni ders/not" if change.is_new else "📢 Not güncellendi"
-    return f"<b>{baslik}</b>\n📚 {ders}\n📝 {notlar}\nDurum: {durum}"
+    satir = f"<b>{baslik}</b>\n📚 {ders}\n📝 {yeni}"
+    onceki = change.old_sinav_notlari
+    if not change.is_new and onceki and onceki != g.sinav_notlari:
+        satir += f"\n<i>(önceki: {html.escape(onceki)})</i>"
+    satir += f"\nDurum: {durum}"
+    return satir
 
 
 def _format_baseline(grades: list[Grade]) -> str:
-    lines = ["🤖 <b>FiratBot başladı!</b>", f"{len(grades)} ders takibe alındı. Yeni not girilince haber vereceğim.\n"]
+    lines = [
+        "🤖 <b>FiratBot başladı!</b>",
+        f"{len(grades)} ders takibe alındı. Yeni not girilince haber vereceğim.\n",
+    ]
     for g in grades:
         lines.append(f"• <b>{html.escape(g.ders_adi)}</b>: {html.escape(g.sinav_notlari or '-')}")
     return "\n".join(lines)
@@ -36,27 +65,29 @@ def _format_baseline(grades: list[Grade]) -> str:
 def main(argv: list[str]) -> int:
     notify = "--no-notify" not in argv
 
+    config = Config.load()
     try:
-        config = Config.load() if notify else Config.load_firat_only()
+        config.require_firat()
     except ConfigError as exc:
-        print(f"[HATA] Yapilandirma: {exc}")
+        print(f"[HATA] {exc}")
         return 1
+
+    telegram_ok = bool(config.telegram_token and config.telegram_chat_id)
+    if notify and not telegram_ok:
+        print("[UYARI] Telegram ayarlanmamis; bildirim gonderilmeyecek.")
 
     print("Notlar cekiliyor...")
     try:
         grades = fetch_grades(config)
-    except Exception as exc:  # noqa: BLE001 - tek pass; bir sonraki kosu tekrar dener
+    except Exception as exc:  # noqa: BLE001 - tek pass; sonraki kosu tekrar dener
         print(f"[HATA] Not cekme basarisiz: {exc}")
         return 1
     print(f"  {len(grades)} ders bulundu.")
 
     old = state.load()
-    is_first_run = not old
-
-    if is_first_run:
-        # Ilk kosu: mevcut notlari baz al, her ders icin spam yapma.
+    if not old:
         print("Ilk calistirma: mevcut durum kaydediliyor (baseline).")
-        if notify:
+        if notify and telegram_ok:
             try:
                 send(config, _format_baseline(grades))
             except Exception as exc:  # noqa: BLE001
@@ -64,13 +95,14 @@ def main(argv: list[str]) -> int:
         state.save(grades)
         return 0
 
-    changes = state.diff(old, grades)
+    changes = _apply_filter(state.diff(old, grades), config.notify_filter)
     if not changes:
-        print("Degisiklik yok.")
+        print("Bildirilecek degisiklik yok.")
+        state.save(grades)  # filtrelenen degisiklikleri de kaydet (tekrar tetiklenmesin)
         return 0
 
-    print(f"  {len(changes)} degisiklik bulundu.")
-    if notify:
+    print(f"  {len(changes)} degisiklik bildirilecek.")
+    if notify and telegram_ok:
         message = "\n\n".join(_format_change(c) for c in changes)
         try:
             send(config, message)
@@ -80,7 +112,7 @@ def main(argv: list[str]) -> int:
             return 1
     else:
         for c in changes:
-            print("  -", c.grade.ders_kodu, c.grade.sinav_notlari)
+            print("  -", c.grade.ders_adi, c.grade.sinav_notlari)
 
     state.save(grades)
     return 0

@@ -16,5 +16,10 @@ dumps/
 run.log
 loop.log
 
-# Yerel calisma durumu (sadece hash; her kontrolde degisir)
+# Yerel calisma durumu (artik %APPDATA%\FiratBot altinda; eski konum)
 state.json
+
+# PyInstaller derleme ciktilari
+build/
+dist/
+*.spec

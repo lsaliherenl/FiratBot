@@ -11,9 +11,20 @@ Akis:
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import asdict, dataclass
+
+# Paketlenmis (.exe) surumde Playwright, tarayiciyi exe'nin gecici klasorunde arar;
+# kurulu tarayicinin bulundugu yere yonlendir (%LOCALAPPDATA%\ms-playwright).
+os.environ.setdefault(
+    "PLAYWRIGHT_BROWSERS_PATH",
+    os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"),
+        "ms-playwright",
+    ),
+)
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import Frame, sync_playwright

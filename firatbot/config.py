@@ -1,32 +1,17 @@
-"""Ortam degiskenlerinden yapilandirma okur.
+"""Calisma yapilandirmasi. Kaynak: settings.json (GUI ile yonetilir).
 
-Yerelde `.env` dosyasi, cloud'da (GitHub Actions) ortam degiskeni / Secrets kullanilir.
+settings.json yoksa, settings.load() otomatik olarak .env / ortam degiskenlerinden
+goc eder (geriye uyum).
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv()
-except ImportError:  # python-dotenv kurulu degilse ortam degiskenlerine guveniriz
-    pass
+from . import settings as _settings
 
 
 class ConfigError(RuntimeError):
     """Eksik/hatali yapilandirma."""
-
-
-def _require(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise ConfigError(
-            f"'{name}' ortam degiskeni tanimli degil. "
-            f".env dosyasini doldurun (bkz. .env.example) veya Secrets ekleyin."
-        )
-    return value
 
 
 @dataclass(frozen=True)
@@ -35,22 +20,32 @@ class Config:
     firat_password: str
     telegram_token: str
     telegram_chat_id: str
+    interval_minutes: int = 15
+    notify_filter: str = "all"
 
     @classmethod
     def load(cls) -> "Config":
+        s = _settings.load()
         return cls(
-            firat_username=_require("FIRAT_USERNAME"),
-            firat_password=_require("FIRAT_PASSWORD"),
-            telegram_token=_require("TELEGRAM_TOKEN"),
-            telegram_chat_id=_require("TELEGRAM_CHAT_ID"),
+            firat_username=s.firat_username,
+            firat_password=s.firat_password,
+            telegram_token=s.telegram_token,
+            telegram_chat_id=s.telegram_chat_id,
+            interval_minutes=s.interval_minutes,
+            notify_filter=s.notify_filter,
         )
 
-    @classmethod
-    def load_firat_only(cls) -> "Config":
-        """Telegram olmadan sadece OBS girisini test etmek icin (debug)."""
-        return cls(
-            firat_username=_require("FIRAT_USERNAME"),
-            firat_password=_require("FIRAT_PASSWORD"),
-            telegram_token=os.environ.get("TELEGRAM_TOKEN", ""),
-            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
-        )
+    # Geriye uyum: eski cagrilar load_firat_only kullaniyordu
+    load_firat_only = load
+
+    def require_firat(self) -> None:
+        if not self.firat_username or not self.firat_password:
+            raise ConfigError(
+                "OBS kullanici adi/parola tanimli degil. Ayar penceresinden girin."
+            )
+
+    def require_telegram(self) -> None:
+        if not self.telegram_token or not self.telegram_chat_id:
+            raise ConfigError(
+                "Telegram token/chat ID tanimli degil. Ayar penceresinden girin."
+            )

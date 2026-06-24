@@ -27,6 +27,7 @@ os.environ.setdefault(
 )
 
 from bs4 import BeautifulSoup
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Frame, sync_playwright
 
 from .config import Config
@@ -191,9 +192,11 @@ def fetch_grades(
                 page.set_default_timeout(timeout_ms)
                 try:
                     return _login_and_open_grades(page, config, timeout_ms)
-                except _RetryableLogin as exc:
+                except (_RetryableLogin, PlaywrightError) as exc:
+                    # Gecici hatalar (caserror, ag degisimi/ERR_NETWORK_CHANGED,
+                    # zaman asimi, sayfa yuklenmedi) -> yeniden dene.
                     last_error = exc
-                    print(f"  [deneme {attempt}/{attempts}] gecici giris hatasi: {exc}")
+                    print(f"  [deneme {attempt}/{attempts}] gecici hata: {exc}")
                 finally:
                     context.close()
                 if attempt < attempts:

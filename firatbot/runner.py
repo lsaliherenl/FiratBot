@@ -40,6 +40,12 @@ def run_loop() -> None:
     print(f"[{_ts()}] === FiratBot dongu basladi ===", flush=True)
     _write_status(state="running", last_run=None, last_result=None)
 
+    # Oturum acilisinda (Startup) sistem/antivirus oturana kadar kisa bekleme;
+    # ilk kontrolun bos bir bicimde basarisiz olmasini onler.
+    STARTUP_GRACE_SEC = 30
+    print(f"[{_ts()}] baslangic icin {STARTUP_GRACE_SEC} sn bekleniyor...", flush=True)
+    time.sleep(STARTUP_GRACE_SEC)
+
     while True:
         s = settings.load()
         interval = max(1, int(s.interval_minutes)) * 60

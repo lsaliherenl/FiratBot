@@ -183,24 +183,26 @@ def fetch_grades(
     birkac kez tekrarlanir.
     """
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        try:
-            last_error: Exception | None = None
-            for attempt in range(1, attempts + 1):
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            browser = None
+            try:
+                # Tarayici baslatma da dongu icinde: acilis aninda (antivirus
+                # taramasi vb.) tarayici gecici erisilemezse yeniden denenir.
+                browser = p.chromium.launch(headless=headless)
                 context = browser.new_context()
                 page = context.new_page()
                 page.set_default_timeout(timeout_ms)
-                try:
-                    return _login_and_open_grades(page, config, timeout_ms)
-                except (_RetryableLogin, PlaywrightError) as exc:
-                    # Gecici hatalar (caserror, ag degisimi/ERR_NETWORK_CHANGED,
-                    # zaman asimi, sayfa yuklenmedi) -> yeniden dene.
-                    last_error = exc
-                    print(f"  [deneme {attempt}/{attempts}] gecici hata: {exc}")
-                finally:
-                    context.close()
-                if attempt < attempts:
-                    time.sleep(5 * attempt)
-            raise ScrapeError(f"Giris {attempts} denemede basarisiz. Son hata: {last_error}")
-        finally:
-            browser.close()
+                return _login_and_open_grades(page, config, timeout_ms)
+            except (_RetryableLogin, PlaywrightError) as exc:
+                # Gecici hatalar (tarayici erisimi, caserror, ag degisimi,
+                # zaman asimi, sayfa yuklenmedi) -> yeniden dene.
+                # (Kalici ScrapeError -> yanlis parola/yapISI; yakalanmaz, hemen cikar.)
+                last_error = exc
+                print(f"  [deneme {attempt}/{attempts}] gecici hata: {exc}")
+            finally:
+                if browser is not None:
+                    browser.close()
+            if attempt < attempts:
+                time.sleep(8 * attempt)
+        raise ScrapeError(f"Giris {attempts} denemede basarisiz. Son hata: {last_error}")

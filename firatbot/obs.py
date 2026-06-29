@@ -11,17 +11,21 @@ Akis:
 """
 from __future__ import annotations
 
+import glob
 import os
 import re
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 
-# Paketlenmis (.exe) surumde Playwright, tarayiciyi exe'nin gecici klasorunde arar;
-# kurulu tarayicinin bulundugu yere yonlendir (%LOCALAPPDATA%\ms-playwright).
+# Tarayici, temizleme araclarinin dokunmadigi kendi kalici klasorumuzde tutulur
+# (%APPDATA%\FiratBot\ms-playwright). Boylece %LOCALAPPDATA% onbellegi silinse de
+# bot etkilenmez. setdefault ile disaridan PLAYWRIGHT_BROWSERS_PATH override edilebilir.
 os.environ.setdefault(
     "PLAYWRIGHT_BROWSERS_PATH",
     os.path.join(
-        os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"),
+        os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming"),
+        "FiratBot",
         "ms-playwright",
     ),
 )
@@ -31,6 +35,39 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Frame, sync_playwright
 
 from .config import Config
+
+
+def _browser_present() -> bool:
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+    pattern = os.path.join(
+        base, "chromium_headless_shell-*", "chrome-headless-shell-win64",
+        "chrome-headless-shell.exe",
+    )
+    return any(os.path.exists(m) for m in glob.glob(pattern))
+
+
+def _ensure_browser() -> None:
+    """Tarayici (chromium) eksikse otomatik kurar; temizleme araci sildiyse
+    bir sonraki kontrolde kendini onarir."""
+    if _browser_present():
+        return
+    print("Tarayici bulunamadi; otomatik kuruluyor (chromium)...", flush=True)
+    try:
+        from playwright._impl._driver import compute_driver_executable, get_driver_env
+
+        node, cli = compute_driver_executable()
+        env = get_driver_env()
+        env["PLAYWRIGHT_BROWSERS_PATH"] = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+        subprocess.run([node, cli, "install", "chromium"], env=env, capture_output=True, timeout=600)
+        print(
+            "Tarayici kurulumu tamamlandi."
+            if _browser_present()
+            else "[UYARI] Tarayici kurulumu dogrulanamadi.",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [UYARI] Otomatik tarayici kurulumu basarisiz: {exc}", flush=True)
+
 
 LOGIN_URL = "https://obs.firat.edu.tr/oibs/std/login.aspx"
 GRADES_FRAME_HINT = "not_listesi_op.aspx"
@@ -182,6 +219,7 @@ def fetch_grades(
     (caserror.aspx) verebildigi icin her deneme yeni bir tarayici context'iyle
     birkac kez tekrarlanir.
     """
+    _ensure_browser()  # tarayici eksikse otomatik kur
     with sync_playwright() as p:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
